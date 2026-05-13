@@ -228,15 +228,16 @@ def get_events(
 
     query = """
         SELECT
-            id,
-            timestamp,
-            recipient,
-            event,
-            reason,
-            sg_event_id,
-            sg_message_id,
-            message_uuid,
-            created_at
+    id,
+    timestamp,
+    recipient,
+    event,
+    reason,
+    sg_event_id,
+    sg_message_id,
+    message_uuid,
+    raw_json,
+    created_at
         FROM events
         WHERE 1=1
     """
