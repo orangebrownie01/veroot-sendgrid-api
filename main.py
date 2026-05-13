@@ -3,16 +3,23 @@ import json
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, Request, Response, Header, HTTPException
-from sendgrid.helpers.eventwebhook import EventWebhook, EcdsaPublicKey
+from sendgrid.helpers.eventwebhook import EventWebhook
 
 app = FastAPI()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
-SENDGRID_PUBLIC_KEY = os.environ.get("SENDGRID_WEBHOOK_PUBLIC_KEY", "")
+
+SENDGRID_PUBLIC_KEY = os.environ.get(
+    "SENDGRID_WEBHOOK_PUBLIC_KEY",
+    ""
+)
 
 APP_API_TOKENS = {
     token.strip()
-    for token in os.environ.get("APP_API_TOKENS", "").split(",")
+    for token in os.environ.get(
+        "APP_API_TOKENS",
+        ""
+    ).split(",")
     if token.strip()
 }
 
@@ -22,8 +29,11 @@ def get_db():
 
 
 def init_db():
+
     with get_db() as con:
+
         with con.cursor() as cur:
+
             cur.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
@@ -45,7 +55,12 @@ def startup():
     init_db()
 
 
-def verify_sendgrid_signature(raw_body: bytes, signature: str, timestamp: str) -> bool:
+def verify_sendgrid_signature(
+    raw_body: bytes,
+    signature: str,
+    timestamp: str
+) -> bool:
+
     if not SENDGRID_PUBLIC_KEY:
         print("Missing SENDGRID_WEBHOOK_PUBLIC_KEY")
         return False
@@ -55,43 +70,73 @@ def verify_sendgrid_signature(raw_body: bytes, signature: str, timestamp: str) -
         return False
 
     try:
-        public_key = EcdsaPublicKey.from_pem(SENDGRID_PUBLIC_KEY)
+
         event_webhook = EventWebhook()
+
+        ec_public_key = event_webhook.convert_public_key_to_ecdsa(
+            SENDGRID_PUBLIC_KEY
+        )
 
         return event_webhook.verify_signature(
             raw_body.decode("utf-8"),
             signature,
             timestamp,
-            public_key
+            ec_public_key
         )
 
     except Exception as e:
-        print("Signature verification error:", str(e))
+
+        print(
+            "Signature verification error:",
+            str(e)
+        )
+
         return False
 
 
-def require_viewer_token(authorization: str | None):
+def require_viewer_token(
+    authorization: str | None
+):
+
     if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+        raise HTTPException(
+            status_code=401,
+            detail="Missing Authorization header"
+        )
 
     prefix = "Bearer "
 
     if not authorization.startswith(prefix):
-        raise HTTPException(status_code=401, detail="Invalid Authorization header")
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Authorization header"
+        )
 
     token = authorization[len(prefix):].strip()
 
     if token not in APP_API_TOKENS:
-        raise HTTPException(status_code=403, detail="Invalid token")
+
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid token"
+        )
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+
+    return {
+        "status": "ok"
+    }
 
 
 @app.post("/sendgrid/events")
-async def sendgrid_events(request: Request):
+async def sendgrid_events(
+    request: Request
+):
+
     raw_body = await request.body()
 
     signature = request.headers.get(
@@ -104,15 +149,31 @@ async def sendgrid_events(request: Request):
         ""
     )
 
-    if not verify_sendgrid_signature(raw_body, signature, timestamp_header):
-        print("Rejected SendGrid webhook: invalid signature")
-        return Response("Invalid SendGrid signature", status_code=401)
+    if not verify_sendgrid_signature(
+        raw_body,
+        signature,
+        timestamp_header
+    ):
 
-    events = json.loads(raw_body.decode("utf-8"))
+        print(
+            "Rejected SendGrid webhook: invalid signature"
+        )
+
+        return Response(
+            "Invalid SendGrid signature",
+            status_code=401
+        )
+
+    events = json.loads(
+        raw_body.decode("utf-8")
+    )
 
     with get_db() as con:
+
         with con.cursor() as cur:
+
             for e in events:
+
                 cur.execute("""
                 INSERT INTO events (
                     timestamp,
@@ -124,13 +185,18 @@ async def sendgrid_events(request: Request):
                     message_uuid,
                     raw_json
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (sg_event_id) DO NOTHING;
+                VALUES (
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s
+                )
+                ON CONFLICT (sg_event_id)
+                DO NOTHING;
                 """, (
                     e.get("timestamp"),
                     e.get("email"),
                     e.get("event"),
-                    e.get("reason") or e.get("response"),
+                    e.get("reason")
+                    or e.get("response"),
                     e.get("sg_event_id"),
                     e.get("sg_message_id"),
                     e.get("message_uuid"),
@@ -138,7 +204,8 @@ async def sendgrid_events(request: Request):
                 ))
 
                 print(
-                    f"Saved event: {e.get('event')} "
+                    f"Saved event: "
+                    f"{e.get('event')} "
                     f"recipient={e.get('email')}"
                 )
 
@@ -152,7 +219,10 @@ def get_events(
     event: str = "All",
     limit: int = 500
 ):
-    require_viewer_token(authorization)
+
+    require_viewer_token(
+        authorization
+    )
 
     limit = min(limit, 1000)
 
@@ -174,6 +244,7 @@ def get_events(
     params = []
 
     if search:
+
         query += """
         AND (
             recipient ILIKE %s
@@ -182,19 +253,46 @@ def get_events(
             OR raw_json::text ILIKE %s
         )
         """
+
         like = f"%{search}%"
-        params.extend([like, like, like, like])
+
+        params.extend([
+            like,
+            like,
+            like,
+            like
+        ])
 
     if event != "All":
-        query += " AND event = %s"
-        params.append(event.lower())
 
-    query += " ORDER BY id DESC LIMIT %s"
+        query += """
+        AND event = %s
+        """
+
+        params.append(
+            event.lower()
+        )
+
+    query += """
+    ORDER BY id DESC
+    LIMIT %s
+    """
+
     params.append(limit)
 
     with get_db() as con:
-        with con.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, params)
+
+        with con.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+
+            cur.execute(
+                query,
+                params
+            )
+
             rows = cur.fetchall()
 
-    return {"events": rows}
+    return {
+        "events": rows
+    }
