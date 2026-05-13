@@ -297,3 +297,10 @@ def get_events(
     return {
         "events": rows
     }
+@app.get("/latest-version")
+def latest_version():
+
+    return {
+        "version": "1.0.1",
+        "download_url": "https://github.com/orangebrownie01/veroot-sendgrid-api/releases/download/v1.0.1/VerootSendGridMonitor.exe"
+    }
