@@ -1,17 +1,15 @@
 import os
 import json
-import base64
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, Request, Response, Header, HTTPException
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from sendgrid.helpers.eventwebhook import EventWebhook, EcdsaPublicKey
 
 app = FastAPI()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 SENDGRID_PUBLIC_KEY = os.environ.get("SENDGRID_WEBHOOK_PUBLIC_KEY", "")
+
 APP_API_TOKENS = {
     token.strip()
     for token in os.environ.get("APP_API_TOKENS", "").split(",")
@@ -47,51 +45,29 @@ def startup():
     init_db()
 
 
-def normalize_public_key(key: str) -> str:
-    if "BEGIN PUBLIC KEY" in key:
-        return key
-
-    compact = "".join(key.split())
-    lines = "\n".join(
-        compact[i:i + 64]
-        for i in range(0, len(compact), 64)
-    )
-
-    return f"-----BEGIN PUBLIC KEY-----\n{lines}\n-----END PUBLIC KEY-----"
-
-
 def verify_sendgrid_signature(raw_body: bytes, signature: str, timestamp: str) -> bool:
     if not SENDGRID_PUBLIC_KEY:
+        print("Missing SENDGRID_WEBHOOK_PUBLIC_KEY")
         return False
 
     if not signature or not timestamp:
+        print("Missing SendGrid signature or timestamp header")
         return False
 
-    signed_payload = timestamp.encode("utf-8") + raw_body
+    try:
+        public_key = EcdsaPublicKey.from_pem(SENDGRID_PUBLIC_KEY)
+        event_webhook = EventWebhook()
 
-    possible_keys = [
-        SENDGRID_PUBLIC_KEY,
-        normalize_public_key(SENDGRID_PUBLIC_KEY),
-    ]
+        return event_webhook.verify_signature(
+            raw_body.decode("utf-8"),
+            signature,
+            timestamp,
+            public_key
+        )
 
-    for key_text in possible_keys:
-        try:
-            public_key = serialization.load_pem_public_key(
-                key_text.encode("utf-8")
-            )
-
-            public_key.verify(
-                base64.b64decode(signature),
-                signed_payload,
-                ec.ECDSA(hashes.SHA256())
-            )
-
-            return True
-
-        except Exception:
-            continue
-
-    return False
+    except Exception as e:
+        print("Signature verification error:", str(e))
+        return False
 
 
 def require_viewer_token(authorization: str | None):
@@ -129,6 +105,7 @@ async def sendgrid_events(request: Request):
     )
 
     if not verify_sendgrid_signature(raw_body, signature, timestamp_header):
+        print("Rejected SendGrid webhook: invalid signature")
         return Response("Invalid SendGrid signature", status_code=401)
 
     events = json.loads(raw_body.decode("utf-8"))
@@ -159,6 +136,11 @@ async def sendgrid_events(request: Request):
                     e.get("message_uuid"),
                     json.dumps(e)
                 ))
+
+                print(
+                    f"Saved event: {e.get('event')} "
+                    f"recipient={e.get('email')}"
+                )
 
     return Response(status_code=202)
 
