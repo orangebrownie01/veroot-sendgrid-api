@@ -332,7 +332,7 @@ def get_events(
 def latest_version():
 
     return {
-        "version": os.environ.get("APP_LATEST_VERSION", "1.0.1"),
+        "version": os.environ.get("APP_LATEST_VERSION", "1.0.2"),
         "download_url": os.environ.get("APP_DOWNLOAD_URL", ""),
         "sha256": os.environ.get("APP_DOWNLOAD_SHA256", "")
     }
