@@ -1,11 +1,11 @@
 import os
 import json
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, Header, HTTPException
 from sendgrid.helpers.eventwebhook import EventWebhook
-
-app = FastAPI()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -24,16 +24,25 @@ APP_API_TOKENS = {
 }
 
 
+connection_pool = pool.ThreadedConnectionPool(
+    minconn=1,
+    maxconn=10,
+    dsn=DATABASE_URL
+)
+
+
 def get_db():
-    return psycopg2.connect(DATABASE_URL)
+    return connection_pool.getconn()
+
+
+def release_db(conn):
+    connection_pool.putconn(conn)
 
 
 def init_db():
-
-    with get_db() as con:
-
-        with con.cursor() as cur:
-
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
             cur.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id SERIAL PRIMARY KEY,
@@ -48,11 +57,28 @@ def init_db():
                 created_at TIMESTAMP DEFAULT NOW()
             );
             """)
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_recipient ON events (recipient);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_event ON events (event);"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_id_desc ON events (id DESC);"
+            )
+        conn.commit()
+    finally:
+        release_db(conn)
 
 
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     init_db()
+    yield
+    connection_pool.closeall()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def verify_sendgrid_signature(
@@ -149,6 +175,9 @@ async def sendgrid_events(
         ""
     )
 
+    # Decode once — reused for both JSON parsing and signature verification
+    body_str = raw_body.decode("utf-8")
+
     if not verify_sendgrid_signature(
         raw_body,
         signature,
@@ -164,13 +193,11 @@ async def sendgrid_events(
             status_code=401
         )
 
-    events = json.loads(
-        raw_body.decode("utf-8")
-    )
+    events = json.loads(body_str)
 
-    with get_db() as con:
-
-        with con.cursor() as cur:
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
 
             for e in events:
 
@@ -208,6 +235,10 @@ async def sendgrid_events(
                     f"{e.get('event')} "
                     f"recipient={e.get('email')}"
                 )
+
+        conn.commit()
+    finally:
+        release_db(conn)
 
     return Response(status_code=202)
 
@@ -251,7 +282,6 @@ def get_events(
             recipient ILIKE %s
             OR event ILIKE %s
             OR reason ILIKE %s
-            OR raw_json::text ILIKE %s
         )
         """
 
@@ -261,7 +291,6 @@ def get_events(
             like,
             like,
             like,
-            like
         ])
 
     if event != "All":
@@ -281,9 +310,9 @@ def get_events(
 
     params.append(limit)
 
-    with get_db() as con:
-
-        with con.cursor(
+    conn = get_db()
+    try:
+        with conn.cursor(
             cursor_factory=RealDictCursor
         ) as cur:
 
@@ -293,14 +322,17 @@ def get_events(
             )
 
             rows = cur.fetchall()
+    finally:
+        release_db(conn)
 
     return {
-        "events": rows
+        "events": [dict(row) for row in rows]
     }
 @app.get("/latest-version")
 def latest_version():
 
     return {
-        "version": "1.0.1",
-        "download_url": "https://github.com/orangebrownie01/veroot-sendgrid-api/releases/download/v1.0.1/VerootSendGridMonitor.exe"
+        "version": os.environ.get("APP_LATEST_VERSION", "1.0.1"),
+        "download_url": os.environ.get("APP_DOWNLOAD_URL", ""),
+        "sha256": os.environ.get("APP_DOWNLOAD_SHA256", "")
     }
