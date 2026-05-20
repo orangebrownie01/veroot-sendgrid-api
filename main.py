@@ -6,6 +6,7 @@ from psycopg2.extras import RealDictCursor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, Header, HTTPException
 from sendgrid.helpers.eventwebhook import EventWebhook
+from mysql_connector import enrich_event, close_all_mysql_connections
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -24,11 +25,7 @@ APP_API_TOKENS = {
 }
 
 
-connection_pool = pool.ThreadedConnectionPool(
-    minconn=1,
-    maxconn=10,
-    dsn=DATABASE_URL
-)
+connection_pool = None
 
 
 def get_db():
@@ -73,9 +70,16 @@ def init_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global connection_pool
+    connection_pool = pool.ThreadedConnectionPool(
+        minconn=1,
+        maxconn=10,
+        dsn=DATABASE_URL
+    )
     init_db()
     yield
     connection_pool.closeall()
+    close_all_mysql_connections()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -328,12 +332,73 @@ def get_events(
     return {
         "events": [dict(row) for row in rows]
     }
+
+
+@app.get("/events/enriched")
+def get_events_enriched(
+    authorization: str | None = Header(default=None),
+    search: str = "",
+    event: str = "All",
+    limit: int = 500
+):
+    """
+    Same as GET /events but each row is enriched with account, user, and
+    email metadata looked up from the MySQL CRM database.
+
+    Enrichment is best-effort — if MySQL is unreachable, events are returned
+    with null enrichment fields rather than failing the whole request.
+    """
+    require_viewer_token(authorization)
+
+    limit = min(limit, 1000)
+
+    query = """
+        SELECT
+            id, timestamp, recipient, event, reason,
+            sg_event_id, sg_message_id, message_uuid,
+            raw_json, created_at
+        FROM events
+        WHERE 1=1
+    """
+
+    params = []
+
+    if search:
+        query += """
+        AND (
+            recipient ILIKE %s
+            OR event ILIKE %s
+            OR reason ILIKE %s
+        )
+        """
+        like = f"%{search}%"
+        params.extend([like, like, like])
+
+    if event != "All":
+        query += " AND event = %s"
+        params.append(event.lower())
+
+    query += " ORDER BY id DESC LIMIT %s"
+    params.append(limit)
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+    finally:
+        release_db(conn)
+
+    enriched = [enrich_event(dict(row)) for row in rows]
+
+    return {"events": enriched}
+
+
 @app.get("/latest-version")
 def latest_version():
-    import os
-    version = os.environ.get("APP_LATEST_VERSION", "NOT_SET")
+
     return {
-        "version": os.environ.get("APP_LATEST_VERSION", "1.0.3"),
+        "version": os.environ.get("APP_LATEST_VERSION", "1.0.1"),
         "download_url": os.environ.get("APP_DOWNLOAD_URL", ""),
         "sha256": os.environ.get("APP_DOWNLOAD_SHA256", "")
     }
