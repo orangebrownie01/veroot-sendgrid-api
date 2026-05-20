@@ -6,7 +6,7 @@ from psycopg2.extras import RealDictCursor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, Header, HTTPException
 from sendgrid.helpers.eventwebhook import EventWebhook
-from mysql_connector import enrich_event, close_all_mysql_connections
+from mysql_connector import lookup_email, lookup_emails_batch, close_all_mysql_connections
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -334,64 +334,46 @@ def get_events(
     }
 
 
-@app.get("/events/enriched")
-def get_events_enriched(
+@app.get("/lookup/email")
+def lookup_single_email(
     authorization: str | None = Header(default=None),
-    search: str = "",
-    event: str = "All",
-    limit: int = 500
+    email: str = ""
 ):
     """
-    Same as GET /events but each row is enriched with account, user, and
-    email metadata looked up from the MySQL CRM database.
-
-    Enrichment is best-effort — if MySQL is unreachable, events are returned
-    with null enrichment fields rather than failing the whole request.
+    Single email lookup — checks Veroot users first, then vendor contacts.
+    Called per-row from the desktop app when the user clicks Lookup on a row.
     """
     require_viewer_token(authorization)
 
-    limit = min(limit, 1000)
+    if not email:
+        raise HTTPException(status_code=400, detail="email parameter required")
 
-    query = """
-        SELECT
-            id, timestamp, recipient, event, reason,
-            sg_event_id, sg_message_id, message_uuid,
-            raw_json, created_at
-        FROM events
-        WHERE 1=1
+    result = lookup_email(email)
+    return {"email": email, "result": result}
+
+
+@app.post("/lookup/batch")
+def lookup_batch_emails(
+    request_body: dict,
+    authorization: str | None = Header(default=None),
+):
     """
+    Batch email lookup — accepts up to 500 emails, runs two IN-clause queries
+    (Veroot users + vendor contacts) and returns results keyed by email.
+    Called when the user clicks Enrich All in the desktop app.
+    """
+    require_viewer_token(authorization)
 
-    params = []
+    emails = request_body.get("emails", [])
 
-    if search:
-        query += """
-        AND (
-            recipient ILIKE %s
-            OR event ILIKE %s
-            OR reason ILIKE %s
-        )
-        """
-        like = f"%{search}%"
-        params.extend([like, like, like])
+    if not isinstance(emails, list):
+        raise HTTPException(status_code=400, detail="emails must be a list")
 
-    if event != "All":
-        query += " AND event = %s"
-        params.append(event.lower())
+    if len(emails) > 500:
+        emails = emails[:500]
 
-    query += " ORDER BY id DESC LIMIT %s"
-    params.append(limit)
-
-    conn = get_db()
-    try:
-        with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
-    finally:
-        release_db(conn)
-
-    enriched = [enrich_event(dict(row)) for row in rows]
-
-    return {"events": enriched}
+    results = lookup_emails_batch(emails)
+    return {"results": results}
 
 
 @app.get("/latest-version")
