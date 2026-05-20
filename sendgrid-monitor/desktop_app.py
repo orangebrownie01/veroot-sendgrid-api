@@ -1,4 +1,4 @@
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.4"
 
 import os
 import sys
@@ -166,8 +166,10 @@ def show_login_screen():
             messagebox.showerror("Missing Token", "Please enter your access token.")
             return
 
+        BUSY_CURSOR = "wait" if sys.platform == "win32" else "watch"
+
         status_label.config(text="Connecting…")
-        login.config(cursor="wait")
+        login.config(cursor=BUSY_CURSOR)
         login.update()
 
         try:
@@ -496,6 +498,8 @@ def on_row_double_click(event):
 # =========================
 
 def download_and_install_update(download_url):
+    import tempfile
+
     try:
         response = requests.get(
             download_url,
@@ -506,48 +510,27 @@ def download_and_install_update(download_url):
 
         response.raise_for_status()
 
-        new_exe_path = os.path.join(APP_DIR, "VerootSendGridMonitor_Update.exe")
+        exe_path = os.path.join(
+            tempfile.gettempdir(),
+            "VerootSendGridMonitor_Update.exe"
+        )
 
-        with open(new_exe_path, "wb") as f:
+        with open(exe_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
 
-        if not os.path.exists(new_exe_path) or os.path.getsize(new_exe_path) == 0:
+        if not os.path.exists(exe_path) or os.path.getsize(exe_path) == 0:
             raise Exception("Download failed: update file was not created.")
 
-        target_exe = os.path.join(APP_DIR, "VerootSendGridMonitor.exe")
-        updater_exe = os.path.join(APP_DIR, "VerootUpdater.exe")
-
-        if not os.path.exists(updater_exe):
-            # Updater missing — fall back to manual instructions
-            messagebox.showinfo(
-                "Update Downloaded",
-                f"The update was downloaded to:\n\n{new_exe_path}\n\n"
-                "Close this app, then run VerootSendGridMonitor_Update.exe to apply it.\n\n"
-                "(VerootUpdater.exe was not found — automatic swap unavailable.)"
-            )
-            return
-
-        answer = messagebox.askyesno(
-            "Ready to Update",
-            "The update has been downloaded.\n\n"
-            "The app will close and restart automatically. Continue?"
+        messagebox.showinfo(
+            "Update Downloaded",
+            f"The update was downloaded here:\n\n{exe_path}\n\n"
+            "Close this app, then open VerootSendGridMonitor_Update.exe."
         )
-
-        if not answer:
-            return
-
-        subprocess.Popen(
-            [updater_exe, new_exe_path, target_exe],
-            cwd=APP_DIR
-        )
-
-        root.quit()
 
     except Exception as e:
         messagebox.showerror("Update Failed", str(e))
-
 
 def check_for_updates():
     try:
