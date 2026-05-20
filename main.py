@@ -330,7 +330,8 @@ def get_events(
     }
 @app.get("/latest-version")
 def latest_version():
-
+    import os
+    version = os.environ.get("APP_LATEST_VERSION", "NOT_SET")
     return {
         "version": os.environ.get("APP_LATEST_VERSION", "1.0.3"),
         "download_url": os.environ.get("APP_DOWNLOAD_URL", ""),
