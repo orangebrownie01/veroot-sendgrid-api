@@ -63,6 +63,14 @@ def init_db():
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_events_id_desc ON events (id DESC);"
             )
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS ignored_emails (
+                id SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                ignored_by TEXT,
+                ignored_at TIMESTAMP DEFAULT NOW()
+            );
+            """)
         conn.commit()
     finally:
         release_db(conn)
@@ -257,26 +265,18 @@ def get_events(
     date_to: int | None = None
 ):
 
-    require_viewer_token(
-        authorization
-    )
-
+    require_viewer_token(authorization)
     limit = min(limit, 1000)
 
     query = """
         SELECT
-    id,
-    timestamp,
-    recipient,
-    event,
-    reason,
-    sg_event_id,
-    sg_message_id,
-    message_uuid,
-    raw_json,
-    created_at
+            id, timestamp, recipient, event, reason,
+            sg_event_id, sg_message_id, message_uuid,
+            raw_json, created_at
         FROM events
-        WHERE 1=1
+        WHERE recipient NOT IN (
+            SELECT email FROM ignored_emails
+        )
     """
 
     params = []
@@ -290,7 +290,6 @@ def get_events(
         params.append(date_to)
 
     if search:
-
         query += """
         AND (
             recipient ILIKE %s
@@ -298,50 +297,25 @@ def get_events(
             OR reason ILIKE %s
         )
         """
-
         like = f"%{search}%"
-
-        params.extend([
-            like,
-            like,
-            like,
-        ])
+        params.extend([like, like, like])
 
     if event != "All":
+        query += " AND event = %s"
+        params.append(event.lower())
 
-        query += """
-        AND event = %s
-        """
-
-        params.append(
-            event.lower()
-        )
-
-    query += """
-    ORDER BY id DESC
-    LIMIT %s
-    """
-
+    query += " ORDER BY id DESC LIMIT %s"
     params.append(limit)
 
     conn = get_db()
     try:
-        with conn.cursor(
-            cursor_factory=RealDictCursor
-        ) as cur:
-
-            cur.execute(
-                query,
-                params
-            )
-
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
             rows = cur.fetchall()
     finally:
         release_db(conn)
 
-    return {
-        "events": [dict(row) for row in rows]
-    }
+    return {"events": [dict(row) for row in rows]}
 
 
 @app.get("/lookup/email")
@@ -384,6 +358,87 @@ def lookup_batch_emails(
 
     results = lookup_emails_batch(emails)
     return {"results": results}
+
+
+
+
+@app.post("/ignored-emails")
+def add_ignored_email(
+    request_body: dict,
+    authorization: str | None = Header(default=None)
+):
+    """Add an email to the shared ignore list."""
+    require_viewer_token(authorization)
+
+    email = (request_body.get("email") or "").strip().lower()
+    ignored_by = (request_body.get("ignored_by") or "").strip()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="email is required")
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO ignored_emails (email, ignored_by)
+                VALUES (%s, %s)
+                ON CONFLICT (email) DO NOTHING
+            """, (email, ignored_by))
+        conn.commit()
+    finally:
+        release_db(conn)
+
+    return {"ignored": email}
+
+
+@app.delete("/ignored-emails/{email}")
+def remove_ignored_email(
+    email: str,
+    authorization: str | None = Header(default=None)
+):
+    """Remove an email from the ignore list (unblock)."""
+    require_viewer_token(authorization)
+
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM ignored_emails WHERE email = %s",
+                (email.strip().lower(),)
+            )
+        conn.commit()
+    finally:
+        release_db(conn)
+
+    return {"unblocked": email}
+
+
+@app.get("/ignored-emails")
+def list_ignored_emails(
+    authorization: str | None = Header(default=None),
+    search: str = ""
+):
+    """List all ignored emails for the Manage Ignored dialog."""
+    require_viewer_token(authorization)
+
+    query = "SELECT email, ignored_by, ignored_at FROM ignored_emails"
+    params = []
+
+    if search:
+        query += " WHERE email ILIKE %s"
+        params.append(f"%{search}%")
+
+    query += " ORDER BY ignored_at DESC"
+
+    conn = get_db()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+    finally:
+        release_db(conn)
+
+    return {"ignored_emails": [dict(row) for row in rows]}
 
 
 @app.get("/latest-version")
