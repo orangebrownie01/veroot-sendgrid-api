@@ -252,7 +252,9 @@ def get_events(
     authorization: str | None = Header(default=None),
     search: str = "",
     event: str = "All",
-    limit: int = 500
+    limit: int = 500,
+    date_from: int | None = None,
+    date_to: int | None = None
 ):
 
     require_viewer_token(
@@ -278,6 +280,14 @@ def get_events(
     """
 
     params = []
+
+    if date_from:
+        query += " AND timestamp >= %s"
+        params.append(date_from)
+
+    if date_to:
+        query += " AND timestamp <= %s"
+        params.append(date_to)
 
     if search:
 
